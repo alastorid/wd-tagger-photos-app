@@ -93,4 +93,4 @@ This will:
 -   read photos from album **album1**
 -   generate tags using **wd-tagger**
 -   write the tags back into **Photos keywords**
--   organize photos based on a trigger tag (e.g., smile/album1 vs no-smile/album1).
+-   organize photos based on a trigger tag (e.g., `smile/album1` vs `no-smile/album1`).
