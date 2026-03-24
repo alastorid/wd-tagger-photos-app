@@ -280,15 +280,61 @@ on isVideoMediaItem(mi)
     end try
 end isVideoMediaItem
 
+property g_validKeywords : {}
+property g_validKeywordsLoaded : false
 on isInvalidKeyword(k)
-    set s to my toLower(k as text)
+    set s to my trimWhitespace(k as text)
+    if s is "" then return true
 
-    if s contains ".com" then return true
-    if s contains ".net" then return true
-    if s contains ".org" then return true
+    set sLower to my toLower(s)
 
-    if s starts with "http" then return true
+    -- obvious junk first
+    if sLower starts with "http" then return true
+    if sLower contains ".com" then return true
+    if sLower contains ".net" then return true
+    if sLower contains ".org" then return true
+    if sLower contains ".xyz" then return true
+    if sLower contains ".vip" then return true
+    if sLower contains ".top" then return true
+    if sLower contains ".info" then return true
+    if sLower contains ".one" then return true
+    if sLower contains ".pl" then return true
 
+    -- lazy-load valid keyword list once
+    if g_validKeywordsLoaded is false then
+        try
+            set cmd to "curl --show-error --max-time 20 -sS -f " & ¬
+                "-H 'Accept: text/plain' " & ¬
+                quoted form of (TAGGER_URL & "/selected_tags?fmt=us")
+
+            set outText to do shell script cmd
+
+            if outText is not "" then
+                set AppleScript's text item delimiters to (character id 31)
+                set g_validKeywords to text items of outText
+                set AppleScript's text item delimiters to ""
+            else
+                set g_validKeywords to {}
+            end if
+        on error errMsg
+            log ("isInvalidKeyword: failed to load /selected_tags : " & errMsg)
+            set g_validKeywords to {}
+        end try
+
+        set g_validKeywordsLoaded to true
+        log ("isInvalidKeyword: loaded valid keyword count=" & (count of g_validKeywords))
+    end if
+
+    -- if we have server tag list, use exact membership check
+    if (count of g_validKeywords) > 0 then
+        if my listContains(g_validKeywords, s) then
+            return false
+        else
+            return true
+        end if
+    end if
+
+    -- fallback if server unavailable: keep old loose behavior
     return false
 end isInvalidKeyword
 

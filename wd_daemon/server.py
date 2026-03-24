@@ -340,6 +340,10 @@ class LocalTagger:
 
         return tag_strings, ratings_list
 
+    def get_selected_tags(self) -> List[str]:
+        self.load_model(self.last_loaded_repo)
+        return list(self.tag_names)
+
 
 def _wants_text(handler) -> bool:
     u = urlparse(handler.path)
@@ -432,6 +436,27 @@ def make_handler(state, debug: bool):
             u = urlparse(self.path)
             if u.path == "/health":
                 return self._send(200, {"ok": True, "cache_items": len(state["tensor_cache"])})
+            if u.path == "/selected_tags":
+                try:
+                    tags = state["tagger"].get_selected_tags()
+
+                    if _wants_text(self):
+                        sep = chr(31)
+                        return self._send_text(200, sep.join(tags))
+
+                    return self._send(200, {
+                        "ok": True,
+                        "model": state["model"],
+                        "count": len(tags),
+                        "tags": tags,
+                    })
+                except Exception as e:
+                    if debug:
+                        _log(debug, "[wd-daemon][error] GET /selected_tags", err=True)
+                        traceback.print_exc(file=sys.stderr)
+                    if _wants_text(self):
+                        return self._send_text(500, "ERR " + str(e))
+                    return self._send(500, {"ok": False, "error": str(e)})
             return self._send(404, {"ok": False, "error": "use POST /hint or POST /tag_batch"})
 
         def do_POST(self):
