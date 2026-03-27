@@ -18,7 +18,7 @@ import torch
 from PIL import Image
 from timm.data import create_transform, resolve_data_config
 from typing import List, Tuple, Dict
-
+Image.MAX_IMAGE_PIXELS = 1_000_000_000
 # -------------------------
 # Models / constants
 # -------------------------
