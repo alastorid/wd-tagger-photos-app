@@ -106,18 +106,19 @@ tag matches:
 ./extract_frame_by_tag.applescript video.mp4 '__EYES__'
 ```
 
-Each argument after the video is a Python regular expression matched against a
+Each argument after the video is a regular expression matched against a
 complete tag; multiple expressions are ORed. Both WD's space form
 (`looks at viewer`) and underscore form (`looks_at_viewer`) are supported.
 Matching JPEG frames are written as `frame_000000000001.jpg`, etc. in
 `video_frames/`. FFmpeg is paused around each inference batch so decoded frames
-remain bounded by a 512 MB RAM-disk buffer.
+remain bounded by a shared 512 MB `/Volumes/ramdisk` buffer. The volume remains
+mounted for reuse by both scripts; each extractor invocation uses and cleans an
+isolated `wd-frame-extractor/<run-uuid>` working directory.
 
-`__EYES__` is a built-in semantic preset for finding a face/eye region that is
-not hidden by post-processing. It requires both an eye-related tag and
-frontal-face/nose evidence such as `looking at viewer`, `looking ahead`, or
-`nose`. Natural image content such as `closed eyes`, `hair over eyes`, an
-`eyepatch`, or a `blindfold` is accepted. It rejects post-processing tags such
-as `mosaic censoring`, `blur censor`, `pixelated`, `blurry`, `motion blur`, and
-`glitch`, plus tags indicating that the face or eyes are absent. An explicit
-`uncensored` tag overrides those rejection tags.
+`__EYES__` is a built-in positive-evidence preset. It requires both an
+eye-related tag and frontal-face/nose evidence such as `looking at viewer`,
+`looking ahead`, or `nose`. Natural image content such as `closed eyes`,
+`hair over eyes`, an `eyepatch`, or a `blindfold` is accepted. Censor, mosaic,
+blur, and other tags never reject a frame because WD can report them alongside
+valid uncovered-eye evidence. Regex evaluation and JSON escaping run natively
+in AppleScriptObjC, avoiding Python process launches inside the frame loop.

@@ -2,7 +2,7 @@
 -- Usage:
 -- osascript tagger.applescript "album" "smile"
 property RAMDISK_NAME : "ramdisk"
-property RAMDISK_MB : 256
+property RAMDISK_MB : 512
 property MAX_KEYWORDS : 64
 property PROGRESS_EVERY : 10
 property BATCH_SIZE : 16
@@ -23,7 +23,8 @@ on run argv
     end if
 
     set t0 to (current date)
-    my ramdiskCleanup()
+    -- Reuse the stable shared RAM disk. Individual export directories are
+    -- already removed after the daemon preloads each image.
     my ramdiskMount(RAMDISK_MB, RAMDISK_NAME)
 
     tell application "Photos"
@@ -159,7 +160,6 @@ on run argv
     set g_pendingNoTriggerAdds to {}
 
     my logProgress(n, n, taggedCount, alreadyTaggedCount, skippedVideoCount, triggerAddedCount, errorCount, t0)
-    my ramdiskCleanup()
     log "Done."
 end run
 

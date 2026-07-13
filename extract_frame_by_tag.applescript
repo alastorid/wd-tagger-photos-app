@@ -1,4 +1,7 @@
 #!/usr/bin/osascript
+use framework "Foundation"
+use scripting additions
+
 -- Extract every video frame through a bounded RAM-disk buffer and retain frames
 -- whose WD tags match at least one supplied regular expression.
 --
@@ -9,9 +12,15 @@
 
 property TAGGER_URL : "http://127.0.0.1:5566"
 property RAMDISK_MB : 512
+property RAMDISK_NAME : "ramdisk"
+property RAMDISK_MOUNT_LOCK : "/tmp/wd-tagger-ramdisk-mount.lock"
 property BATCH_SIZE : 16
 property POLL_SECONDS : 0.10
 property MAX_RETRIES : 3
+property g_compiledRegexes : {}
+property g_eyesPreset : false
+property g_eyeEvidenceRegex : missing value
+property g_faceEvidenceRegex : missing value
 
 on run argv
     if (count of argv) < 2 then
@@ -20,7 +29,7 @@ on run argv
 
     set videoPath to my absoluteExistingFile(item 1 of argv)
     set regexes to items 2 thru -1 of argv
-    my validateRegexes(regexes)
+    my prepareMatchers(regexes)
     my requireTagger()
 
     set ffmpegPath to my findExecutable("ffmpeg")
@@ -28,21 +37,23 @@ on run argv
     my prepareOutputDirectory(outputDir)
 
     set runID to do shell script "/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]'"
-    set volumeName to "wd-frames-" & text 1 thru 8 of runID
-    set mountPath to "/Volumes/" & volumeName
-    set bufferDir to mountPath & "/frames"
-    set pidFile to mountPath & "/ffmpeg.pid"
-    set doneFile to mountPath & "/ffmpeg.done"
-    set logFile to mountPath & "/ffmpeg.log"
+    set mountPath to "/Volumes/" & RAMDISK_NAME
+    set workDir to mountPath & "/wd-frame-extractor/" & runID
+    set bufferDir to workDir & "/frames"
+    set pidFile to workDir & "/ffmpeg.pid"
+    set doneFile to workDir & "/ffmpeg.done"
+    set logFile to workDir & "/ffmpeg.log"
     set producerPID to ""
     set producerStopped to false
     set processedCount to 0
     set matchedCount to 0
 
     try
-        my mountRamdisk(RAMDISK_MB, volumeName)
+        my ensureRamdisk(RAMDISK_MB, RAMDISK_NAME, mountPath)
+        my cleanupStaleWorkdirs(mountPath & "/wd-frame-extractor")
         do shell script "/bin/mkdir -p " & quoted form of bufferDir
-        log ("Mounted RAM buffer at " & mountPath)
+        my writeOwnerPID(workDir)
+        log ("Using shared RAM buffer at " & mountPath)
 
         set producerPID to my startFFmpeg(ffmpegPath, videoPath, bufferDir, pidFile, doneFile, logFile)
         log ("Started video=" & videoPath & " patterns=" & my joinText(regexes, ", "))
@@ -68,7 +79,7 @@ on run argv
                 if safeCount > BATCH_SIZE then set safeCount to BATCH_SIZE
                 if safeCount > 0 then
                     set batchPaths to items 1 thru safeCount of framePaths
-                    set resultCounts to my processFrameBatch(batchPaths, regexes, outputDir)
+                    set resultCounts to my processFrameBatch(batchPaths, outputDir)
                     set processedCount to processedCount + item 1 of resultCounts
                     set matchedCount to matchedCount + item 2 of resultCounts
                     log ("Progress frames=" & processedCount & " matches=" & matchedCount)
@@ -82,7 +93,7 @@ on run argv
                 set takeCount to frameCount
                 if takeCount > BATCH_SIZE then set takeCount to BATCH_SIZE
                 set batchPaths to items 1 thru takeCount of framePaths
-                set resultCounts to my processFrameBatch(batchPaths, regexes, outputDir)
+                set resultCounts to my processFrameBatch(batchPaths, outputDir)
                 set processedCount to processedCount + item 1 of resultCounts
                 set matchedCount to matchedCount + item 2 of resultCounts
                 log ("Progress frames=" & processedCount & " matches=" & matchedCount)
@@ -99,7 +110,7 @@ on run argv
             error "FFmpeg failed with exit code " & ffmpegStatus & ": " & ffmpegLog
         end if
 
-        my unmountRamdisk(mountPath)
+        my cleanupWorkdir(workDir)
         log ("Done. Scanned " & processedCount & " frames; copied " & matchedCount & " matches to " & outputDir)
         return outputDir
     on error errMsg number errNum
@@ -107,12 +118,12 @@ on run argv
             if producerStopped then my signalProcess(producerPID, "CONT")
             my signalProcess(producerPID, "TERM")
         end if
-        my unmountRamdisk(mountPath)
+        my cleanupWorkdir(workDir)
         error errMsg number errNum
     end try
 end run
 
-on processFrameBatch(framePaths, regexes, outputDir)
+on processFrameBatch(framePaths, outputDir)
     set inferencePaths to {}
     repeat with framePath in framePaths
         set sourcePath to framePath as text
@@ -128,7 +139,7 @@ on processFrameBatch(framePaths, regexes, outputDir)
         set tagLines to my tagBatchWithRetry(keys, MAX_RETRIES)
         if (count of tagLines) is not (count of framePaths) then error "Tagger returned the wrong number of tag results"
 
-        set matchFlags to my regexMatchFlags(tagLines, regexes)
+        set matchFlags to my regexMatchFlags(tagLines)
         if (count of matchFlags) is not (count of framePaths) then error "Regex matcher returned the wrong number of results"
 
         set matchedNow to 0
@@ -182,30 +193,87 @@ on tagBatchWithRetry(keys, maxTries)
     end repeat
 end tagBatchWithRetry
 
-on regexMatchFlags(tagLines, regexes)
-    set payload to "{\"patterns\":" & my jsonArrayOfStrings(regexes) & ",\"tags\":" & my jsonArrayOfStrings(tagLines) & "}"
-    set py to "import json,re,sys; o=json.loads(sys.argv[1]); preset='__EYES__' in o['patterns']; rs=[re.compile(x) for x in o['patterns'] if x != '__EYES__']; " & ¬
-        "clean=lambda s:s.replace('\\\\(', '(').replace('\\\\)', ')'); " & ¬
-        "eye=re.compile(r'(?:.* )?eyes(?: .*)?|(?:.* )?eye(?: .*)?|wide-eyed|(?:long |thick )?eyelashes|eyepatch|medical eyepatch|blindfold|black blindfold'); " & ¬
-        "front=re.compile(r'looking at viewer|eye contact|looking ahead|nose|dot nose|pointy nose|animal nose|nose blush|red nose|big nose|long nose'); " & ¬
-        "blocked=re.compile(r'censored|mosaic censoring|bar censor|blur censor|identity censor|character censor|blank censor|pixelated|blurry|blurry foreground|motion blur|glitch|faceless(?: male| female)?|no eyes|covered face|covering face'); " & ¬
-        "vals=lambda line:[clean(x.strip()) for x in line.split(',') if x.strip()]; " & ¬
-        "special=lambda vs:any(eye.fullmatch(v) for v in vs) and any(front.fullmatch(v) for v in vs) and (not any(blocked.fullmatch(v) for v in vs) or 'uncensored' in vs); " & ¬
-        "f=lambda line:(preset and special(vals(line))) or any(r.fullmatch(v) or r.fullmatch(v.replace(' ','_')) for v in vals(line) for r in rs); " & ¬
-        "print('\\n'.join('1' if f(x) else '0' for x in o['tags']))"
-    set resultText to do shell script "/usr/bin/python3 -c " & quoted form of py & " " & quoted form of payload
-    return my splitLinesPreservingEmpty(resultText)
+on regexMatchFlags(tagLines)
+    set flags to {}
+    repeat with tagLine in tagLines
+        set tags to my parseTagLine(tagLine as text)
+        set regularMatch to false
+        set hasEyeEvidence to false
+        set hasFaceEvidence to false
+
+        repeat with oneTag in tags
+            set tagText to oneTag as text
+            set underscoreTag to my replaceText(tagText, " ", "_")
+
+            if g_eyesPreset then
+                if my regexMatches(g_eyeEvidenceRegex, tagText) then set hasEyeEvidence to true
+                if my regexMatches(g_faceEvidenceRegex, tagText) then set hasFaceEvidence to true
+            end if
+
+            if regularMatch is false then
+                repeat with regexObject in g_compiledRegexes
+                    if my regexMatches(regexObject, tagText) or my regexMatches(regexObject, underscoreTag) then
+                        set regularMatch to true
+                        exit repeat
+                    end if
+                end repeat
+            end if
+        end repeat
+
+        if regularMatch or (g_eyesPreset and hasEyeEvidence and hasFaceEvidence) then
+            set end of flags to "1"
+        else
+            set end of flags to "0"
+        end if
+    end repeat
+    return flags
 end regexMatchFlags
 
-on validateRegexes(regexes)
-    set payload to my jsonArrayOfStrings(regexes)
-    set py to "import json,re,sys; [re.compile(x) for x in json.loads(sys.argv[1]) if x != '__EYES__']"
-    try
-        do shell script "/usr/bin/python3 -c " & quoted form of py & " " & quoted form of payload
-    on error errMsg number errNum
-        error "Invalid tag regular expression: " & errMsg number errNum
-    end try
-end validateRegexes
+on prepareMatchers(regexes)
+    set g_compiledRegexes to {}
+    set g_eyesPreset to false
+
+    repeat with patternText in regexes
+        set onePattern to patternText as text
+        if onePattern is "__EYES__" then
+            set g_eyesPreset to true
+        else
+            set end of g_compiledRegexes to my compileFullRegex(onePattern)
+        end if
+    end repeat
+
+    if g_eyesPreset then
+        set g_eyeEvidenceRegex to my compileFullRegex("(?:.* )?eyes(?: .*)?|(?:.* )?eye(?: .*)?|wide-eyed|(?:long |thick )?eyelashes|eyepatch|medical eyepatch|blindfold|black blindfold")
+        set g_faceEvidenceRegex to my compileFullRegex("looking at viewer|eye contact|looking ahead|nose|dot nose|pointy nose|animal nose|nose blush|red nose|big nose|long nose")
+    end if
+end prepareMatchers
+
+on compileFullRegex(patternText)
+    set regexObject to current application's NSRegularExpression's regularExpressionWithPattern:("\\A(?:" & patternText & ")\\z") options:0 |error|:(missing value)
+    if regexObject is missing value then error "Invalid tag regular expression: " & patternText
+    return regexObject
+end compileFullRegex
+
+on regexMatches(regexObject, inputText)
+    set nsText to current application's NSString's stringWithString:inputText
+    set searchRange to current application's NSMakeRange(0, nsText's |length|())
+    set matchRange to regexObject's rangeOfFirstMatchInString:nsText options:0 range:searchRange
+    return (matchRange's |length|) > 0
+end regexMatches
+
+on parseTagLine(tagLine)
+    set AppleScript's text item delimiters to ","
+    set rawTags to text items of tagLine
+    set AppleScript's text item delimiters to ""
+    set tags to {}
+    repeat with rawTag in rawTags
+        set cleanTag to my trimWhitespace(rawTag as text)
+        set cleanTag to my replaceText(cleanTag, "\\(", "(")
+        set cleanTag to my replaceText(cleanTag, "\\)", ")")
+        if cleanTag is not "" then set end of tags to cleanTag
+    end repeat
+    return tags
+end parseTagLine
 
 on requireTagger()
     try
@@ -248,18 +316,99 @@ on signalProcess(pidText, signalName)
     end try
 end signalProcess
 
-on mountRamdisk(sizeMB, volumeName)
-    set sectors to sizeMB * 2048
-    set cmd to "/usr/sbin/diskutil erasevolume HFS+ " & quoted form of volumeName & ¬
-        " `/usr/bin/hdiutil attach -nomount ram://" & sectors & "` >/dev/null"
-    do shell script cmd
-end mountRamdisk
+on ensureRamdisk(sizeMB, volumeName, mountPath)
+    if my isMountedVolume(mountPath) then
+        my verifyRamdiskWritable(mountPath)
+        return
+    end if
 
-on unmountRamdisk(mountPath)
+    set ownsLock to false
+    repeat with attempt from 1 to 100
+        try
+            do shell script "/bin/mkdir " & quoted form of RAMDISK_MOUNT_LOCK
+            do shell script "/bin/echo $PPID > " & quoted form of (RAMDISK_MOUNT_LOCK & "/owner-pid")
+            set ownsLock to true
+            exit repeat
+        on error
+            if my isMountedVolume(mountPath) then
+                my verifyRamdiskWritable(mountPath)
+                return
+            end if
+            set lockPID to my readTextFile(RAMDISK_MOUNT_LOCK & "/owner-pid")
+            if lockPID is not "" then
+                try
+                    do shell script "/bin/kill -0 " & quoted form of lockPID & " 2>/dev/null"
+                on error
+                    do shell script "/bin/rm -rf " & quoted form of RAMDISK_MOUNT_LOCK
+                end try
+            end if
+            delay 0.05
+        end try
+    end repeat
+    if ownsLock is false then error "Timed out waiting to create shared RAM disk at " & mountPath
+
     try
-        do shell script "/usr/sbin/diskutil eject " & quoted form of mountPath & " >/dev/null 2>&1 || true"
+        if my isMountedVolume(mountPath) is false then
+            set sectors to sizeMB * 2048
+            set cmd to "device=$(/usr/bin/hdiutil attach -nomount ram://" & sectors & " | /usr/bin/awk 'NR==1 {print $1}'); " & ¬
+                "/bin/test -n \"$device\" || exit 1; " & ¬
+                "if ! /usr/sbin/diskutil erasevolume HFS+ " & quoted form of volumeName & " \"$device\" >/dev/null; then " & ¬
+                "/usr/bin/hdiutil detach \"$device\" >/dev/null 2>&1 || true; exit 1; fi"
+            do shell script cmd
+        end if
+        my verifyRamdiskWritable(mountPath)
+        do shell script "/bin/rm -rf " & quoted form of RAMDISK_MOUNT_LOCK
+    on error errMsg number errNum
+        do shell script "/bin/rm -rf " & quoted form of RAMDISK_MOUNT_LOCK
+        error "Could not prepare shared RAM disk: " & errMsg number errNum
     end try
-end unmountRamdisk
+end ensureRamdisk
+
+on isMountedVolume(mountPath)
+    try
+        do shell script "/usr/sbin/diskutil info " & quoted form of mountPath & " 2>/dev/null | /usr/bin/grep -Eq '^ *Mounted: +Yes$'"
+        return true
+    on error
+        return false
+    end try
+end isMountedVolume
+
+on verifyRamdiskWritable(mountPath)
+    set probePath to mountPath & "/.wd-write-test-" & (do shell script "/usr/bin/uuidgen")
+    do shell script "/usr/bin/touch " & quoted form of probePath & " && /bin/rm -f " & quoted form of probePath
+end verifyRamdiskWritable
+
+on writeOwnerPID(workDir)
+    do shell script "/bin/echo $PPID > " & quoted form of (workDir & "/.owner-pid")
+end writeOwnerPID
+
+on cleanupStaleWorkdirs(workRoot)
+    try
+        do shell script "/bin/mkdir -p " & quoted form of workRoot
+        set dirText to do shell script "/usr/bin/find " & quoted form of workRoot & " -mindepth 1 -maxdepth 1 -type d -print"
+        if dirText is "" then return
+        repeat with oneDir in paragraphs of dirText
+            set dirPath to oneDir as text
+            set ownerFile to dirPath & "/.owner-pid"
+            set ownerPID to my readTextFile(ownerFile)
+            if ownerPID is "" then
+                do shell script "/bin/rm -rf " & quoted form of dirPath
+            else
+                try
+                    do shell script "/bin/kill -0 " & quoted form of ownerPID & " 2>/dev/null"
+                on error
+                    do shell script "/bin/rm -rf " & quoted form of dirPath
+                end try
+            end if
+        end repeat
+    end try
+end cleanupStaleWorkdirs
+
+on cleanupWorkdir(workDir)
+    try
+        do shell script "/bin/rm -rf " & quoted form of workDir
+    end try
+end cleanupWorkdir
 
 on prepareOutputDirectory(outputDir)
     do shell script "/bin/mkdir -p " & quoted form of outputDir
@@ -268,15 +417,24 @@ on prepareOutputDirectory(outputDir)
 end prepareOutputDirectory
 
 on outputDirectoryFor(videoPath)
-    set py to "from pathlib import Path; p=Path(__import__('sys').argv[1]); print(p.with_name(p.stem + '_frames'))"
-    return do shell script "/usr/bin/python3 -c " & quoted form of py & " " & quoted form of videoPath
+    set nsPath to current application's NSString's stringWithString:videoPath
+    set parentPath to nsPath's stringByDeletingLastPathComponent()
+    set fileStem to (nsPath's lastPathComponent()'s stringByDeletingPathExtension()) as text
+    return (parentPath's stringByAppendingPathComponent:(fileStem & "_frames")) as text
 end outputDirectoryFor
 
 on absoluteExistingFile(inputPath)
-    set py to "from pathlib import Path; import sys; p=Path(sys.argv[1]).expanduser().resolve(); print(p if p.is_file() else '')"
-    set resultPath to do shell script "/usr/bin/python3 -c " & quoted form of py & " " & quoted form of inputPath
-    if resultPath is "" then error "Video file does not exist: " & inputPath
-    return resultPath
+    set nsPath to current application's NSString's stringWithString:inputPath
+    set nsPath to nsPath's stringByExpandingTildeInPath()
+    if not (nsPath's isAbsolutePath()) then
+        set currentDir to current application's NSFileManager's defaultManager()'s currentDirectoryPath()
+        set nsPath to currentDir's stringByAppendingPathComponent:nsPath
+    end if
+    set nsPath to nsPath's stringByStandardizingPath()'s stringByResolvingSymlinksInPath()
+    if not (current application's NSFileManager's defaultManager()'s fileExistsAtPath:nsPath) then
+        error "Video file does not exist: " & inputPath
+    end if
+    return nsPath as text
 end absoluteExistingFile
 
 on findExecutable(toolName)
@@ -335,9 +493,40 @@ on jsonArrayOfStrings(xs)
 end jsonArrayOfStrings
 
 on jsonQuote(s)
-    set py to "import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False))"
-    return do shell script "/usr/bin/python3 -c " & quoted form of py & " " & quoted form of (s as text)
+    set escapedText to s as text
+    set escapedText to my replaceText(escapedText, "\\", "\\\\")
+    set escapedText to my replaceText(escapedText, "\"", "\\\"")
+    set escapedText to my replaceText(escapedText, character id 8, "\\b")
+    set escapedText to my replaceText(escapedText, character id 12, "\\f")
+    set escapedText to my replaceText(escapedText, return, "\\r")
+    set escapedText to my replaceText(escapedText, linefeed, "\\n")
+    set escapedText to my replaceText(escapedText, tab, "\\t")
+    return "\"" & escapedText & "\""
 end jsonQuote
+
+on replaceText(sourceText, searchText, replacementText)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to searchText
+    set textParts to text items of sourceText
+    set AppleScript's text item delimiters to replacementText
+    set resultText to textParts as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return resultText
+end replaceText
+
+on trimWhitespace(s)
+    set whitespace to {" ", tab, return, linefeed}
+    set resultText to s as text
+    repeat while resultText is not "" and first character of resultText is in whitespace
+        if (count of characters of resultText) = 1 then return ""
+        set resultText to text 2 thru -1 of resultText
+    end repeat
+    repeat while resultText is not "" and last character of resultText is in whitespace
+        if (count of characters of resultText) = 1 then return ""
+        set resultText to text 1 thru -2 of resultText
+    end repeat
+    return resultText
+end trimWhitespace
 
 on joinText(xs, delimiterText)
     set oldDelimiters to AppleScript's text item delimiters
