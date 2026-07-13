@@ -94,3 +94,30 @@ This will:
 -   generate tags using **wd-tagger**
 -   write the tags back into **Photos keywords**
 -   organize photos based on a trigger tag (e.g., `smile/album1` vs `no-smile/album1`).
+
+### Extract video frames by tag
+
+With the same daemon running, scan all frames in a video and retain only WD
+tag matches:
+
+``` bash
+./extract_frame_by_tag.applescript video.mp4 'looks_at_viewer'
+./extract_frame_by_tag.applescript video.mp4 'eyes.+' 'smile|grin'
+./extract_frame_by_tag.applescript video.mp4 '__EYES__'
+```
+
+Each argument after the video is a Python regular expression matched against a
+complete tag; multiple expressions are ORed. Both WD's space form
+(`looks at viewer`) and underscore form (`looks_at_viewer`) are supported.
+Matching JPEG frames are written as `frame_000000000001.jpg`, etc. in
+`video_frames/`. FFmpeg is paused around each inference batch so decoded frames
+remain bounded by a 512 MB RAM-disk buffer.
+
+`__EYES__` is a built-in semantic preset for finding a face/eye region that is
+not hidden by post-processing. It requires both an eye-related tag and
+frontal-face/nose evidence such as `looking at viewer`, `looking ahead`, or
+`nose`. Natural image content such as `closed eyes`, `hair over eyes`, an
+`eyepatch`, or a `blindfold` is accepted. It rejects post-processing tags such
+as `mosaic censoring`, `blur censor`, `pixelated`, `blurry`, `motion blur`, and
+`glitch`, plus tags indicating that the face or eyes are absent. An explicit
+`uncensored` tag overrides those rejection tags.
