@@ -391,9 +391,9 @@ on cleanupStaleWorkdirs(workRoot)
             set dirPath to oneDir as text
             set ownerFile to dirPath & "/.owner-pid"
             set ownerPID to my readTextFile(ownerFile)
-            if ownerPID is "" then
-                do shell script "/bin/rm -rf " & quoted form of dirPath
-            else
+            -- A missing owner file can mean another invocation just created
+            -- the directory and has not written its PID yet. Leave it alone.
+            if ownerPID is not "" then
                 try
                     do shell script "/bin/kill -0 " & quoted form of ownerPID & " 2>/dev/null"
                 on error
