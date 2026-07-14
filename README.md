@@ -115,10 +115,9 @@ remain bounded by a shared 512 MB `/Volumes/ramdisk` buffer. The volume remains
 mounted for reuse by both scripts; each extractor invocation uses and cleans an
 isolated `wd-frame-extractor/<run-uuid>` working directory.
 
-`__EYES__` is a built-in positive-evidence preset. It requires both an
-eye-related tag and frontal-face/nose evidence such as `looking at viewer`,
-`looking ahead`, or `nose`. Natural image content such as `closed eyes`,
-`hair over eyes`, an `eyepatch`, or a `blindfold` is accepted. Censor, mosaic,
-blur, and other tags never reject a frame because WD can report them alongside
-valid uncovered-eye evidence. Regex evaluation and JSON escaping run natively
-in AppleScriptObjC, avoiding Python process launches inside the frame loop.
+`__EYES__` is a built-in positive-evidence preset. Any emitted eye-related tag
+is sufficient: examples include color-specific `... eyes`, `closed eyes`,
+`one eye closed`, `hair over eyes`, `eyelashes`, `eyepatch`, and `blindfold`.
+No separate face, gaze, or nose tag is required. Censor, mosaic, blur, and other
+tags never reject a frame. Regex evaluation and JSON escaping run natively in
+AppleScriptObjC, avoiding Python process launches inside the frame loop.

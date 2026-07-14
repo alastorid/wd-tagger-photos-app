@@ -20,7 +20,6 @@ property MAX_RETRIES : 3
 property g_compiledRegexes : {}
 property g_eyesPreset : false
 property g_eyeEvidenceRegex : missing value
-property g_faceEvidenceRegex : missing value
 
 on run argv
     if (count of argv) < 2 then
@@ -199,7 +198,6 @@ on regexMatchFlags(tagLines)
         set tags to my parseTagLine(tagLine as text)
         set regularMatch to false
         set hasEyeEvidence to false
-        set hasFaceEvidence to false
 
         repeat with oneTag in tags
             set tagText to oneTag as text
@@ -207,7 +205,6 @@ on regexMatchFlags(tagLines)
 
             if g_eyesPreset then
                 if my regexMatches(g_eyeEvidenceRegex, tagText) then set hasEyeEvidence to true
-                if my regexMatches(g_faceEvidenceRegex, tagText) then set hasFaceEvidence to true
             end if
 
             if regularMatch is false then
@@ -220,7 +217,7 @@ on regexMatchFlags(tagLines)
             end if
         end repeat
 
-        if regularMatch or (g_eyesPreset and hasEyeEvidence and hasFaceEvidence) then
+        if regularMatch or (g_eyesPreset and hasEyeEvidence) then
             set end of flags to "1"
         else
             set end of flags to "0"
@@ -244,7 +241,6 @@ on prepareMatchers(regexes)
 
     if g_eyesPreset then
         set g_eyeEvidenceRegex to my compileFullRegex("(?:.* )?eyes(?: .*)?|(?:.* )?eye(?: .*)?|wide-eyed|(?:long |thick )?eyelashes|eyepatch|medical eyepatch|blindfold|black blindfold")
-        set g_faceEvidenceRegex to my compileFullRegex("looking at viewer|eye contact|looking ahead|nose|dot nose|pointy nose|animal nose|nose blush|red nose|big nose|long nose")
     end if
 end prepareMatchers
 
